@@ -326,7 +326,7 @@ public class ClassRealm
         Collections.reverse( classLoadOrderFromFile );
         int size = classLoadOrderFromFile.size();
         new Thread( getPreloader(classLoadOrderFromFile, size / 2, 0) ).start();
-        new Thread( getPreloader(classLoadOrderFromFile, size, size / 2 ) ).start();
+        new Thread( getPreloader(classLoadOrderFromFile, size -1 , size / 2 ) ).start();
     }
 
     private Runnable getPreloader(final List<String> elements, final int start, final int stop)
