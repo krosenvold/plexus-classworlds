@@ -73,10 +73,15 @@ public class ClassRealm
 
     private String historyFileName;
 
-    public final Set<String> loadedClasses = Collections.synchronizedSet( new LinkedHashSet<String>(  ) );
-    private int loadedJars;
-    public final Set<String> historicClasses = Collections.synchronizedSet( new LinkedHashSet<String>(  ) );
-    private int histroicJars;
+    public final Set<String> recordedClassLoadOrder = Collections.synchronizedSet( new LinkedHashSet<String>() );
+
+    private int recorderNumberOfClassPathElements;
+
+    public final List<String> classLoadOrderFromFile = new ArrayList<String>();
+
+    private int numberOfClassPathElementsFromFile;
+
+    private final boolean shouldRecord;
 
     /**
      * Creates a new class realm.
@@ -94,16 +99,13 @@ public class ClassRealm
 
         this.id = id;
 
-
         this.historyFileName = "classworld-" + id;
 
         foreignImports = new TreeSet<Entry>();
 
         strategy = StrategyFactory.getStrategy( this );
 
-        if (loadHistory()){
-            startPreloader();
-        }
+        shouldRecord = loadClassloadingHistory();
 
     }
 
@@ -169,6 +171,7 @@ public class ClassRealm
         return null;
     }
 
+    @SuppressWarnings( "UnusedDeclaration" )
     public Collection<ClassRealm> getImportRealms()
     {
         Collection<ClassRealm> importRealms = new HashSet<ClassRealm>();
@@ -189,6 +192,7 @@ public class ClassRealm
         return strategy;
     }
 
+    @SuppressWarnings( "UnusedDeclaration" )
     public void setParentClassLoader( ClassLoader parentClassLoader )
     {
         this.parentClassLoader = parentClassLoader;
@@ -238,8 +242,9 @@ public class ClassRealm
         }
 
         super.addURL( url );
-        this.loadedJars += 1;
-        if ( loadedJars == histroicJars && historicClasses.size() > 0 ){
+        this.recorderNumberOfClassPathElements += 1;
+        if ( recorderNumberOfClassPathElements == numberOfClassPathElementsFromFile && !shouldRecord )
+        {
             startPreloader();
         }
     }
@@ -277,7 +282,7 @@ public class ClassRealm
     private Class<?> unsynchronizedLoadClass( String name, boolean resolve )
         throws ClassNotFoundException
     {
-        loadedClasses.add( name );
+        if (shouldRecord) recordedClassLoadOrder.add( name );
         try
         {
             // first, try loading bootstrap classes
@@ -294,65 +299,86 @@ public class ClassRealm
     public void close()
         throws IOException
     {
-        if (id != null){
-            FileWriter fw = new FileWriter( historyFileName );
-            fw.write( "" + loadedJars );
+        if ( id != null && shouldRecord )
+        { // Only write once ever
+            writeClassLoadHistory();
+        }
+        super.close();
+    }
+
+    private void writeClassLoadHistory()
+        throws IOException
+    {
+        FileWriter fw = new FileWriter( historyFileName );
+        fw.write( Integer.toString( recorderNumberOfClassPathElements ) );
+        fw.write( "\n" );
+
+        for ( String loadedClass : recordedClassLoadOrder )
+        {
+            fw.write( loadedClass );
             fw.write( "\n" );
-
-            for ( String loadedClass : loadedClasses )
-            {
-                fw.write( loadedClass );
-                fw.write( "\n" );
-            }
         }
-        super.close();    //To change body of overridden methods use File | Settings | File Templates.
+        fw.close();
     }
 
-    private void startPreloader(){
-    new Thread(new Runnable()
+    private void startPreloader()
     {
-        public void run()
-        {
-            List<String> items = new ArrayList<String>( historicClasses );
-            Collections.reverse( items );
-            for ( String loadedClass : items )
-            {
-                try
-                {
-                    loadClass( loadedClass );
-                }
-                catch ( ClassNotFoundException ignore )
-                {
-                }
-            }
-            System.out.println( "Preloading Completed " + world );
-        }
-    }).start();
+        Collections.reverse( classLoadOrderFromFile );
+        int size = classLoadOrderFromFile.size();
+        new Thread( getPreloader(classLoadOrderFromFile, size / 2, 0) ).start();
+        new Thread( getPreloader(classLoadOrderFromFile, size, size / 2 ) ).start();
     }
 
-    private boolean loadHistory()
+    private Runnable getPreloader(final List<String> elements, final int start, final int stop)
     {
-        try {
-        File history = new File(historyFileName);
-        if (history.exists()){
-            FileInputStream fis = new FileInputStream( historyFileName );
-            BufferedReader br = new BufferedReader(new InputStreamReader(fis, Charset.forName( "UTF-8" )));
-            String line;
-            line = br.readLine();
-            this.histroicJars = Integer.parseInt( line );
-
-            while (( line = br.readLine()) != null) {
-                historicClasses.add(  line );
+        return new Runnable()
+        {
+            public void run()
+            {
+                long startTime = System.currentTimeMillis();
+                for (int i = start; i >= stop; i--){
+                    try
+                    {
+                        loadClass( elements.get( i ) );
+                    }
+                    catch ( ClassNotFoundException ignore )
+                    {
+                    }
+                }
+                System.out.println( "Preloading " + id + " Completed in " + ((int) System.currentTimeMillis() - startTime) );
             }
-            return historicClasses.size() > 0;
+        };
+    }
+
+    private boolean loadClassloadingHistory()
+    {
+
+        try
+        {
+            File history = new File( historyFileName );
+            if ( history.exists() )
+            {
+                FileInputStream fis = new FileInputStream( historyFileName );
+                BufferedReader br = new BufferedReader( new InputStreamReader( fis, Charset.forName( "UTF-8" ) ) );
+                String line;
+                line = br.readLine();
+                this.numberOfClassPathElementsFromFile = Integer.parseInt( line );
+
+                while ( ( line = br.readLine() ) != null )
+                {
+                    classLoadOrderFromFile.add( line );
+                }
+                return false;
+            }
         }
-        } catch (NumberFormatException e){
-            System.out.println("Malformed data file  " + id);
-        } catch (IOException ignore)
+        catch ( NumberFormatException e )
+        {
+            System.out.println( "Malformed data file  " + id );
+        }
+        catch ( IOException ignore )
         {
         }
-        return false;
-
+        return true;
     }
 
     protected Class<?> findClass( String name )
@@ -627,7 +653,7 @@ public class ClassRealm
 
     static
     {
-        if  (isParallelCapable) // Avoid running this method on older jdks
+        if ( isParallelCapable ) // Avoid running this method on older jdks
         {
             registerAsParallelCapable();
         }
