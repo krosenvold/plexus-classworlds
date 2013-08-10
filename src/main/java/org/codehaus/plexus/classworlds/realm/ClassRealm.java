@@ -20,17 +20,26 @@ import org.codehaus.plexus.classworlds.ClassWorld;
 import org.codehaus.plexus.classworlds.strategy.Strategy;
 import org.codehaus.plexus.classworlds.strategy.StrategyFactory;
 
+import java.io.BufferedReader;
 import java.io.Closeable;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.PrintStream;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.charset.Charset;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Enumeration;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
 
@@ -62,6 +71,13 @@ public class ClassRealm
 
     private static final boolean isParallelCapable = Closeable.class.isAssignableFrom( URLClassLoader.class );
 
+    private String historyFileName;
+
+    public final Set<String> loadedClasses = Collections.synchronizedSet( new LinkedHashSet<String>(  ) );
+    private int loadedJars;
+    public final Set<String> historicClasses = Collections.synchronizedSet( new LinkedHashSet<String>(  ) );
+    private int histroicJars;
+
     /**
      * Creates a new class realm.
      *
@@ -78,9 +94,17 @@ public class ClassRealm
 
         this.id = id;
 
+
+        this.historyFileName = "classworld-" + id;
+
         foreignImports = new TreeSet<Entry>();
 
         strategy = StrategyFactory.getStrategy( this );
+
+        if (loadHistory()){
+            startPreloader();
+        }
+
     }
 
     public String getId()
@@ -214,6 +238,10 @@ public class ClassRealm
         }
 
         super.addURL( url );
+        this.loadedJars += 1;
+        if ( loadedJars == histroicJars && historicClasses.size() > 0 ){
+            startPreloader();
+        }
     }
 
     // ----------------------------------------------------------------------
@@ -230,6 +258,7 @@ public class ClassRealm
     protected Class<?> loadClass( String name, boolean resolve )
         throws ClassNotFoundException
     {
+
         if ( isParallelCapable )
         {
             return unsynchronizedLoadClass( name, resolve );
@@ -248,6 +277,7 @@ public class ClassRealm
     private Class<?> unsynchronizedLoadClass( String name, boolean resolve )
         throws ClassNotFoundException
     {
+        loadedClasses.add( name );
         try
         {
             // first, try loading bootstrap classes
@@ -258,6 +288,71 @@ public class ClassRealm
             // next, try loading via imports, self and parent as controlled by strategy
             return strategy.loadClass( name );
         }
+    }
+
+    @Override
+    public void close()
+        throws IOException
+    {
+        if (id != null){
+            FileWriter fw = new FileWriter( historyFileName );
+            fw.write( "" + loadedJars );
+            fw.write( "\n" );
+
+            for ( String loadedClass : loadedClasses )
+            {
+                fw.write( loadedClass );
+                fw.write( "\n" );
+            }
+        }
+        super.close();    //To change body of overridden methods use File | Settings | File Templates.
+    }
+
+    private void startPreloader(){
+    new Thread(new Runnable()
+    {
+        public void run()
+        {
+            List<String> items = new ArrayList<String>( historicClasses );
+            Collections.reverse( items );
+            for ( String loadedClass : items )
+            {
+                try
+                {
+                    loadClass( loadedClass );
+                }
+                catch ( ClassNotFoundException ignore )
+                {
+                }
+            }
+            System.out.println( "Preloading Completed " + world );
+        }
+    }).start();
+    }
+
+    private boolean loadHistory()
+    {
+        try {
+        File history = new File(historyFileName);
+        if (history.exists()){
+            FileInputStream fis = new FileInputStream( historyFileName );
+            BufferedReader br = new BufferedReader(new InputStreamReader(fis, Charset.forName( "UTF-8" )));
+            String line;
+            line = br.readLine();
+            this.histroicJars = Integer.parseInt( line );
+
+            while (( line = br.readLine()) != null) {
+                historicClasses.add(  line );
+            }
+            return historicClasses.size() > 0;
+        }
+        } catch (NumberFormatException e){
+            System.out.println("Malformed data file  " + id);
+        } catch (IOException ignore)
+        {
+        }
+        return false;
+
     }
 
     protected Class<?> findClass( String name )
